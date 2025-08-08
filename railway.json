@@ -1,0 +1,10 @@
+{
+  "build": {
+    "env": {
+      "SHARED_SECRET": "VS-Genesis-777"
+    }
+  },
+  "deploy": {
+    "startCommand": "uvicorn main:app --host 0.0.0.0 --port $PORT"
+  }
+}
