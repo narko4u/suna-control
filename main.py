@@ -59,8 +59,9 @@ async def add_cmd(data: dict):
     return {"status": "OK", "queued": True}
 
 @app.get("/next")
-async def get_next(agent: str, sig: str):
-    if not verify_sig(agent, "next", "", int(time.time()), sig):
+async def get_next(agent: str, ts: int, sig: str):
+    # Senti signs: f"{agent}.next..{ts}"
+    if not verify_sig(agent, "next", "", ts, sig):
         raise HTTPException(status_code=401, detail="Invalid signature")
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
