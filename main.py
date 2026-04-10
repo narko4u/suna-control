@@ -1,9 +1,9 @@
-import os, time, hmac, hashlib, sqlite3, json
+import os, time, hmac, hashlib, sqlite3
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Request, Header, Query
 from fastapi.responses import JSONResponse
 
-app = FastAPI(title="Suna Control Plane", version="1.1.0")
+app = FastAPI(title="Suna Control Plane", version="1.2.0")
 
 DB_PATH       = os.getenv("DB_PATH", "control.db")
 SHARED_SECRET = os.getenv("SHARED_SECRET", "")
@@ -43,7 +43,24 @@ def ok(data: dict) -> JSONResponse:
     d.update(data)
     return JSONResponse(d)
 
-# ---------- health ----------
+# ---------- health / status ----------
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "suna-control"}
+
+@app.get("/api/status")
+def api_status():
+    with sqlite3.connect(DB_PATH) as c:
+        total    = c.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+        pending  = c.execute("SELECT COUNT(*) FROM commands WHERE executed=0").fetchone()[0]
+        executed = c.execute("SELECT COUNT(*) FROM commands WHERE executed=1").fetchone()[0]
+    return {
+        "status": "ok",
+        "service": "suna-control",
+        "commands": {"total": total, "pending": pending, "executed": executed},
+    }
+
+# ---------- root ----------
 @app.get("/")
 def root():
     return {"status": "Suna Control Plane is Live!"}
@@ -72,9 +89,9 @@ def cmd(
     action: str = Query(...),
     payload: str = Query(""),
     ts: int = Query(...),
-    sig: str = Query(...)
+    sig: str = Query(...),
 ):
-    """Signature: HMAC(secret, f"{agent}.{action}.{payload}.{ts}")"""
+    """Signature: HMAC(secret, f\"{agent}.{action}.{payload}.{ts}\")"""
     msg = f"{agent}.{action}.{payload}.{ts}"
     if not (SHARED_SECRET and hmac.compare_digest(hmac_hex(msg), sig)):
         raise HTTPException(401, "Invalid signature")
@@ -83,14 +100,14 @@ def cmd(
 
 @app.get("/next")
 def nxt(agent: str, ts: int, sig: str):
-    """Signature: HMAC(secret, f"{agent}.next..{ts}")"""
+    """Signature: HMAC(secret, f\"{agent}.next..{ts}\")"""
     msg = f"{agent}.next..{ts}"
     if not (SHARED_SECRET and hmac.compare_digest(hmac_hex(msg), sig)):
         raise HTTPException(401, "Invalid signature")
     with sqlite3.connect(DB_PATH) as c:
         row = c.execute(
             "SELECT id, action, payload FROM commands WHERE agent=? AND executed=0 ORDER BY id ASC LIMIT 1",
-            (agent,)
+            (agent,),
         ).fetchone()
     if not row:
         return {"status": "no_pending"}
@@ -102,9 +119,9 @@ def result(
     id: int = Query(...),
     result: str = Query(""),
     ts: int = Query(...),
-    sig: str = Query(...)
+    sig: str = Query(...),
 ):
-    """Signature: HMAC(secret, f"{agent}.result.{id}.{ts}")"""
+    """Signature: HMAC(secret, f\"{agent}.result.{id}.{ts}\")"""
     msg = f"{agent}.result.{id}.{ts}"
     if not (SHARED_SECRET and hmac.compare_digest(hmac_hex(msg), sig)):
         raise HTTPException(401, "Invalid signature")
@@ -134,40 +151,39 @@ async def gh_webhook(
     def _fmt_sha(s: str) -> str: return s[:7] if s else ""
     def _summary() -> str:
         if event == "push":
-            repo = body.get("repository", {}).get("full_name")
-            pusher = body.get("pusher", {}).get("name")
-            branch = (body.get("ref") or "").split("/")[-1]
-            commit = _fmt_sha(body.get("after", ""))
-            count = len(body.get("commits") or [])
+            repo    = body.get("repository", {}).get("full_name")
+            pusher  = body.get("pusher", {}).get("name")
+            branch  = (body.get("ref") or "").split("/")[-1]
+            commit  = _fmt_sha(body.get("after", ""))
+            count   = len(body.get("commits") or [])
             return f"🟣 PUSH • {repo}@{branch} by {pusher} • {count} commit(s) • {commit}"
         if event == "pull_request":
-            repo = body.get("repository", {}).get("full_name")
-            pr = body.get("number")
+            repo   = body.get("repository", {}).get("full_name")
+            pr     = body.get("number")
             action = body.get("action")
-            title = (body.get("pull_request") or {}).get("title")
-            user = ((body.get("pull_request") or {}).get("user") or {}).get("login")
+            title  = (body.get("pull_request") or {}).get("title")
+            user   = ((body.get("pull_request") or {}).get("user") or {}).get("login")
             return f"🟣 PR {action} • {repo} #{pr} by {user} — {title}"
         if event == "workflow_run":
-            repo = body.get("repository", {}).get("full_name")
-            wr = body.get("workflow_run") or {}
-            name = wr.get("name")
-            status = wr.get("status")
+            repo       = body.get("repository", {}).get("full_name")
+            wr         = body.get("workflow_run") or {}
+            name       = wr.get("name")
+            status     = wr.get("status")
             conclusion = wr.get("conclusion")
             head_branch = wr.get("head_branch")
-            head_sha = _fmt_sha(wr.get("head_sha", ""))
-            emoji = "✅" if conclusion == "success" else ("❌" if conclusion else "🚧")
+            head_sha   = _fmt_sha(wr.get("head_sha", ""))
+            emoji      = "✅" if conclusion == "success" else ("❌" if conclusion else "🚧")
             return f"{emoji} CI • {repo} • {name} [{status}/{conclusion}] • {head_branch}@{head_sha}"
         if event == "deployment_status":
-            repo = body.get("repository", {}).get("full_name")
-            ds = body.get("deployment_status") or {}
+            repo  = body.get("repository", {}).get("full_name")
+            ds    = body.get("deployment_status") or {}
             state = ds.get("state")
-            env = (body.get("deployment") or {}).get("environment")
-            sha = _fmt_sha((body.get("deployment") or {}).get("sha", ""))
-            emoji = {"success":"🚀","failure":"🛑","in_progress":"⏳"}.get(state, "📦")
+            env   = (body.get("deployment") or {}).get("environment")
+            sha   = _fmt_sha((body.get("deployment") or {}).get("sha", ""))
+            emoji = {"success": "🚀", "failure": "🛑", "in_progress": "⏳"}.get(state, "📦")
             return f"{emoji} Deploy • {repo} • {env} • {state} • {sha}"
         return f"ℹ️ GitHub event: {event}"
 
     msg = _summary()
-    # queue as a command for Suna to relay via Telegram
     queue_command("suna", "say", msg, int(time.time()), sig="gh")
     return ok({"queued": {"agent": "suna", "action": "say", "message": msg}})
